@@ -459,7 +459,11 @@ export class Game implements GameCtx {
     // entities
     const entDist = this.settings.renderDistance * CHUNK * (this.settings.entityDistance / 100);
     this.entities.render(1);
-    for (const e of this.entities.list) e.obj.visible = e.distTo(p.x, p.y, p.z) < entDist;
+    // hide anything standing on terrain that hasn't been drawn yet, so nothing appears to float at the horizon
+    for (const e of this.entities.list) {
+      const c = this.world.chunkAt(Math.floor(e.x), Math.floor(e.z));
+      e.obj.visible = e.distTo(p.x, p.y, p.z) < entDist && !!c && c.meshVersion >= 0;
+    }
     this.updateShadows();
     this.updateSigns(dt);
     // hand

@@ -70,8 +70,10 @@ export class Terrain {
     if (cont < -0.3) h = SEA_LEVEL + (cont + 0.3) * 70; // ocean floor
     else h = SEA_LEVEL + 1 + smoothstep(-0.3, -0.18, cont) * 2 + Math.max(0, cont) * 16;
     h += det * (4 + 9 * smoothstep(0.5, -0.4, ero)) * land;
-    const mount = smoothstep(0.35, 0.9, ridge) * smoothstep(-0.05, 0.35, cont) * smoothstep(0.35, -0.25, ero);
-    h += mount * 52;
+    // rounded foothills rising to sharper peaks, instead of sheer walls along the ridge line
+    const rm = smoothstep(0.2, 1.0, ridge);
+    const mount = (rm * rm * 0.7 + rm * 0.3) * smoothstep(-0.05, 0.35, cont) * smoothstep(0.35, -0.25, ero);
+    h += mount * 50;
     // rivers
     const rvn = Math.abs(this.rv.fbm2(x / 520, z / 520, 2));
     let river = false;

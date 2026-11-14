@@ -435,23 +435,31 @@ export const OVERWORLD_STRUCTS: StructType[] = [
   { key: 'crater', spacing: 704, chance: 0.4, radius: 12, ok: landBiome([Bi.Plains, Bi.Desert, Bi.Tundra, Bi.Savanna, Bi.Badlands, Bi.Meadow]), build: buildCrater },
 ];
 
-export function placeStructures(w: Writer, T: Terrain, list: StructType[], seed: number) {
+const UNDERGROUND = new Set(['dungeon', 'mineshaft', 'cache']);
+/** builds the parts of nearby structures inside this chunk; returns surface footprints near the chunk so trees can avoid them */
+export function placeStructures(w: Writer, T: Terrain, list: StructType[], seed: number): [number, number, number][] {
   const x0 = w.cx * CHUNK, z0 = w.cz * CHUNK;
+  const near: [number, number, number][] = [];
+  const M = 6; // tree margin
   for (let si = 0; si < list.length; si++) {
     const st = list[si];
-    const c0x = Math.floor((x0 - st.radius) / st.spacing), c1x = Math.floor((x0 + 15 + st.radius) / st.spacing);
-    const c0z = Math.floor((z0 - st.radius) / st.spacing), c1z = Math.floor((z0 + 15 + st.radius) / st.spacing);
+    const R = st.radius + M;
+    const c0x = Math.floor((x0 - R) / st.spacing), c1x = Math.floor((x0 + 15 + R) / st.spacing);
+    const c0z = Math.floor((z0 - R) / st.spacing), c1z = Math.floor((z0 + 15 + R) / st.spacing);
     for (let gx = c0x; gx <= c1x; gx++) for (let gz = c0z; gz <= c1z; gz++) {
       const hsh = hash32(seed, gx, gz, si * 7919 + 13);
       if ((hsh & 0xffff) / 65536 > st.chance) continue;
       const margin = Math.min(st.radius, st.spacing / 4);
       const px = gx * st.spacing + margin + Math.floor(((hsh >>> 16) / 65536) * (st.spacing - 2 * margin));
       const pz = gz * st.spacing + margin + Math.floor((hash32(hsh, 3) / 4294967296) * (st.spacing - 2 * margin));
-      if (px + st.radius < x0 || px - st.radius > x0 + 15 || pz + st.radius < z0 || pz - st.radius > z0 + 15) continue;
+      if (px + R < x0 || px - R > x0 + 15 || pz + R < z0 || pz - R > z0 + 15) continue;
       if (!st.ok(T, px, pz)) continue;
+      if (!UNDERGROUND.has(st.key)) near.push([px, pz, st.radius + 2]);
+      if (px + st.radius < x0 || px - st.radius > x0 + 15 || pz + st.radius < z0 || pz - st.radius > z0 + 15) continue;
       st.build(w, T, px, pz, mulberry(hsh));
     }
   }
+  return near;
 }
 /** returns nearest structure origin of a type (used by Wayfolk cartographers) */
 export function nearestStructure(T: Terrain, key: string, x: number, z: number, seed: number, maxCells = 6): [number, number] | null {

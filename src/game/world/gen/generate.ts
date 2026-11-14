@@ -31,6 +31,21 @@ export function generateChunk(seed: number, dim: Dim, cx: number, cz: number): G
 }
 
 /* =========================================================== Overworld */
+/** lake in chunk (cx,cz): [centreX, centreZ, radius, lava] or null; independent of every other generation step */
+function lakeAt(seed: number, cx: number, cz: number): [number, number, number, boolean] | null {
+  const r = mulberry(hash32(seed, cx, cz, 0x1a4e));
+  if (r() >= 0.06) return null;
+  return [cx * CHUNK + 4 + Math.floor(r() * 8), cz * CHUNK + 4 + Math.floor(r() * 8), 3 + Math.floor(r() * 2), r() < 0.15];
+}
+/** true when a cave tunnel breaks through the ground surface at this column (same rule as the carver) */
+function surfaceCave(c: Ctx, wx: number, h: number, wz: number): boolean {
+  if (c.misc.n2(wx / 90, wz / 90) <= 0.25) return false;
+  for (const y of [h, h - 1]) {
+    const a = c.cave1.n3(wx / 42, y / 26, wz / 42), b = c.cave2.n3(wx / 42 + 50, y / 26, wz / 42 - 50);
+    if (Math.abs(a) < 0.075 && Math.abs(b) < 0.075) return true;
+  }
+  return false;
+}
 function vein(w: Writer, rng: Rng, ore: number, size: number, x: number, y: number, z: number, hosts: number[]) {
   let px = x, py = y, pz = z;
   for (let i = 0; i < size; i++) {
@@ -96,12 +111,18 @@ function overworld(c: Ctx, w: Writer, biomes: Uint8Array) {
       if (h < SEA_LEVEL) w.blocks[x + z * CHUNK + SEA_LEVEL * CHUNK_AREA] = hashf(wx, wz, 11) < 0.85 ? B.ice : B.packed_ice;
       else w.blocks[x + z * CHUNK + (h + 1) * CHUNK_AREA] = B.snow_layer;
     }
-    // floating islets (rare unusual terrain)
-    if (biome === Bi.Mountains || biome === Bi.Meadow) {
-      const f = c.misc.n2(wx / 30 + 500, wz / 30);
-      if (f > 0.55) {
-        const mid = 112, thick = Math.floor((f - 0.55) * 30);
-        for (let y = mid - thick; y <= mid; y++) w.blocks[x + z * CHUNK + y * CHUNK_AREA] = y === mid ? B.grass : y > mid - 3 ? B.dirt : B.stone;
+    // sky islands: rare, large, lens-shaped (a dome on top, a long tapering underside)
+    if (biome === Bi.Mountains || biome === Bi.Meadow || biome === Bi.Plains || biome === Bi.Forest) {
+      const region = c.misc.n2(wx / 900 + 90, wz / 900 - 40);
+      if (region > 0.52) {
+        const f = c.misc.n2(wx / 85 + 500, wz / 85) + c.misc.n2(wx / 23 - 70, wz / 23) * 0.18 - (1 - region) * 0.25;
+        if (f > 0.3) {
+          const t = f - 0.3;
+          const base = 100 + Math.floor(c.misc.n2(wx / 300, wz / 300 + 20) * 8);
+          const top = Math.min(HEIGHT - 6, base + Math.floor(Math.sqrt(t) * 7));
+          const bottom = top - Math.floor(t * 70 + 2);
+          if (top > h + 12) for (let y = bottom; y <= top; y++) w.blocks[x + z * CHUNK + y * CHUNK_AREA] = y === top ? B.grass : y > top - 3 ? B.dirt : B.stone;
+        }
       }
     }
   }
@@ -155,12 +176,12 @@ function overworld(c: Ctx, w: Writer, biomes: Uint8Array) {
   if (midBiome === Bi.Mountains) for (let i = 0; i < 4; i++) { const x = x0 + Math.floor(rng() * 16), z = z0 + Math.floor(rng() * 16), y = 30 + Math.floor(rng() * 60); if (w.get(x, y, z) === S) w.set(x, y, z, B.verdite_ore); }
   if (midBiome === Bi.Badlands) for (let i = 0; i < 6; i++) vein(w, rng, B.gold_ore, 5, x0 + Math.floor(rng() * 16), 32 + Math.floor(rng() * 40), z0 + Math.floor(rng() * 16), [S, B.terracotta, B.terracotta_orange]);
   // --- lakes (contained within chunk)
-  if (rng() < 0.06) {
-    const lx = x0 + 4 + Math.floor(rng() * 8), lz = z0 + 4 + Math.floor(rng() * 8);
+  const lake = lakeAt(seed, w.cx, w.cz);
+  if (lake) {
+    const [lx, lz, r] = lake;
     const col = cols[(lx - x0) + (lz - z0) * CHUNK];
-    const lava = rng() < 0.15 && col.biome !== Bi.Swamp;
+    const lava = lake[3] && col.biome !== Bi.Swamp;
     if (col.h > SEA_LEVEL + 1 && col.biome !== Bi.Desert || lava) {
-      const r = 3 + Math.floor(rng() * 2);
       for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
         const d = dx * dx + dz * dz;
         if (d > r * r) continue;
@@ -181,21 +202,25 @@ function overworld(c: Ctx, w: Writer, biomes: Uint8Array) {
     }
   }
   // --- structures (before vegetation so trees don't grow inside houses)
-  placeStructures(w, T, OVERWORLD_STRUCTS, seed);
-  // --- trees (with 3 block margin so canopies cross chunk borders deterministically)
-  for (let z = -3; z < CHUNK + 3; z++) for (let x = -3; x < CHUNK + 3; x++) {
+  const footprints = placeStructures(w, T, OVERWORLD_STRUCTS, seed);
+  // --- trees. Every chunk that a canopy touches must make the same decision, so the choice uses only
+  // deterministic inputs (terrain, cave noise, lakes, structure footprints), never this chunk's blocks.
+  const TM = 6;
+  for (let z = -TM; z < CHUNK + TM; z++) for (let x = -TM; x < CHUNK + TM; x++) {
     const wx = x0 + x, wz = z0 + z;
     const inChunk = x >= 0 && x < CHUNK && z >= 0 && z < CHUNK;
     const col = inChunk ? cols[x + z * CHUNK] : T.sample(wx, wz);
     const bd = BIOMES[col.biome];
     const r = hashf(wx, wz, seed + 77);
-    if (col.h < SEA_LEVEL) continue;
-    if (col.biome === Bi.Mushroom && r < 0.004) { giantMushroom(w, wx, col.h + 1, wz, mulberry(hash32(wx, wz, seed, 5))); continue; }
-    if (r >= bd.treeChance) continue;
-    // ground must be soil and unchanged by structures/caves
-    const ground = w.get(wx, col.h, wz);
-    if (inChunk && ground !== B.grass && ground !== B.dirt && ground !== B.snow_layer && ground !== B.mud) continue;
-    if (inChunk && w.get(wx, col.h + 1, wz) !== 0 && w.get(wx, col.h + 1, wz) !== B.snow_layer) continue;
+    if (col.h < SEA_LEVEL || col.river) continue;
+    const isMush = col.biome === Bi.Mushroom && r < 0.004;
+    if (!isMush && r >= bd.treeChance) continue;
+    if (col.biome === Bi.Mountains && col.h > 96) continue; // bare rock and snow
+    if (footprints.some(([sx, sz, sr]) => Math.abs(wx - sx) <= sr + 3 && Math.abs(wz - sz) <= sr + 3)) continue;
+    if (surfaceCave(c, wx, col.h, wz)) continue;
+    const lk = lakeAt(seed, Math.floor(wx / CHUNK), Math.floor(wz / CHUNK));
+    if (lk && (wx - lk[0]) ** 2 + (wz - lk[1]) ** 2 <= (lk[2] + 2) ** 2) continue;
+    if (isMush) { giantMushroom(w, wx, col.h + 1, wz, mulberry(hash32(wx, wz, seed, 5))); continue; }
     let tw = bd.trees.reduce((a, t) => a + t[1], 0) * hashf(wx, wz, seed + 78), sp = bd.trees[0][0];
     for (const [k, wt] of bd.trees) { if ((tw -= wt) < 0) { sp = k; break; } }
     growTree(w, sp, wx, col.h + 1, wz, mulberry(hash32(wx, wz, seed, 9)));
